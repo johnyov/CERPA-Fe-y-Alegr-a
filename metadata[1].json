@@ -1,0 +1,7 @@
+{
+  "name": "Remix: C.E.R.P.A. | Fe y Alegría",
+  "description": "Sistema inteligente de gestión de recursos bibliográficos para Fe y Alegría, con escaneo digital y asistencia de IA.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}

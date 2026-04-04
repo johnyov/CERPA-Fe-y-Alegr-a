@@ -1,0 +1,127 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // ===============================================================
+    // GLOBAL HELPERS
+    // ===============================================================
+    
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isSuperAdmin() {
+      return isAuthenticated() && 
+             (request.auth.token.email == "jazaelcaceres@gmail.com" ||
+              request.auth.token.email == "johnyov@gmail.com" ||
+              request.auth.uid == "8S5odMiGcwWBJPuKcGvGovovWwq2");
+    }
+
+    function isAdmin() {
+      return isAuthenticated() && (
+        isSuperAdmin() || 
+        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin')
+      );
+    }
+
+    // ===============================================================
+    // DATA VALIDATORS
+    // ===============================================================
+
+    function isValidUser(data) {
+      return data.keys().hasAll(['uid', 'email', 'role']) &&
+             data.uid is string &&
+             data.email is string &&
+             data.role in ['admin', 'user', 'teacher', 'student', 'other'];
+    }
+
+    function isValidBook(data) {
+      return data.keys().hasAll(['title', 'author']) &&
+             data.title is string && data.title.size() < 500 &&
+             data.author is string && data.author.size() < 200 &&
+             (!('isbn' in data) || (data.isbn is string && data.isbn.size() < 50)) &&
+             (!('category' in data) || (data.category is string && data.category.size() < 100)) &&
+             (!('academicLevel' in data) || (data.academicLevel is string && data.academicLevel.size() < 100)) &&
+             (!('publisher' in data) || (data.publisher is string && data.publisher.size() < 200)) &&
+             (!('description' in data) || (data.description is string && data.description.size() < 5000)) &&
+             (!('year' in data) || (data.year is number)) &&
+             (!('pages' in data) || (data.pages is number)) &&
+             (!('language' in data) || (data.language is string && data.language.size() < 50)) &&
+             (!('stock' in data) || (data.stock is number)) &&
+             (!('pdfUrl' in data) || (data.pdfUrl is string && data.pdfUrl.size() < 1000)) &&
+             (!('coverUrl' in data) || (data.coverUrl is string && data.coverUrl.size() < 500000)) &&
+             (!('createdAt' in data) || (data.createdAt is string && data.createdAt.size() < 100));
+    }
+
+    function isValidScan(data) {
+      return data.keys().hasAll(['uid', 'bookId', 'timestamp']) &&
+             data.uid == request.auth.uid &&
+             data.bookId is string &&
+             (data.timestamp is timestamp || data.timestamp is string) &&
+             (!('type' in data) || (data.type in ['scan', 'read']));
+    }
+
+    function isValidFavorite(data) {
+      return data.keys().hasAll(['uid', 'bookId', 'timestamp']) &&
+             data.uid == request.auth.uid &&
+             data.bookId is string &&
+             (data.timestamp is timestamp || data.timestamp is string);
+    }
+
+    // ===============================================================
+    // COLLECTION RULES
+    // ===============================================================
+
+    // --- USERS ---
+    match /users/{userId} {
+      // Allow users to read their own profile or super admins to read any
+      allow read: if (request.auth != null && request.auth.uid == userId) || isSuperAdmin();
+      
+      // Allow users to create their own profile
+      allow create: if (request.auth != null && request.auth.uid == userId) && isValidUser(request.resource.data);
+      
+      // Allow users to update their own profile (but not their role unless super admin)
+      allow update: if (request.auth != null && request.auth.uid == userId && request.resource.data.role == resource.data.role) || isSuperAdmin();
+      
+      // Allow users to delete their own account or super admins
+      allow delete: if (request.auth != null && request.auth.uid == userId) || isSuperAdmin();
+    }
+
+    // --- BOOKS ---
+    match /books/{bookId} {
+      // Anyone authenticated can browse the catalog
+      allow read: if isAuthenticated();
+      
+      // Only admins can manage books
+      allow create, update: if isAdmin() && isValidBook(request.resource.data);
+      allow delete: if isAdmin();
+    }
+
+    // --- SCANS (Reading History) ---
+    match /scans/{scanId} {
+      // Users can see their own history, admins can see everything
+      allow read: if isAuthenticated() && (resource.data.uid == request.auth.uid || isAdmin());
+      
+      // Users can record their own scans
+      allow create: if isAuthenticated() && isValidScan(request.resource.data);
+      
+      // Scans are generally immutable
+      allow update, delete: if isAdmin();
+    }
+
+    // --- FAVORITES ---
+    match /favorites/{favoriteId} {
+      // Users can see their own favorites
+      allow read: if isAuthenticated() && (resource.data.uid == request.auth.uid || isAdmin());
+      
+      // Users can manage their own favorites
+      allow create: if isAuthenticated() && isValidFavorite(request.resource.data);
+      allow delete: if isAuthenticated() && resource.data.uid == request.auth.uid;
+    }
+  }
+}
