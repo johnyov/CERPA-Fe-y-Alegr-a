@@ -29,6 +29,7 @@ import { useLanguage } from '../contexts/LanguageContext';
 import { PdfViewer } from '../components/PdfViewer';
 import { handleBookDownload } from '../lib/download-utils';
 import { useAuth } from '../contexts/AuthContext';
+import { resolveEducationalStage } from '../constants';
 
 export const BookDetails = () => {
   const { id } = useParams();
@@ -158,6 +159,8 @@ export const BookDetails = () => {
   if (loading) return <div className="flex items-center justify-center h-96"><Loader2 className="animate-spin text-primary" size={48} /></div>;
   if (!book) return <div className="text-center py-20">{t('book.not_found')}</div>;
 
+  const bookStage = resolveEducationalStage(book);
+
   return (
     <div className="max-w-7xl mx-auto">
       <nav className="flex items-center gap-2 text-sm text-on-surface-variant mb-12">
@@ -207,6 +210,18 @@ export const BookDetails = () => {
             <div className="lg:col-span-7">
               <div className="mb-8">
                 <div className="flex flex-wrap gap-3 mb-6">
+                  {bookStage && (
+                    <span className="px-4 py-1.5 bg-secondary/15 text-secondary font-label text-xs font-bold rounded-full uppercase tracking-wider">
+                      {bookStage === 'Primaria'
+                        ? t('catalog.stage.primaria')
+                        : t('catalog.stage.media')}
+                    </span>
+                  )}
+                  {book.academicLevel && (
+                    <span className="px-4 py-1.5 bg-primary/15 text-primary font-label text-xs font-bold rounded-full uppercase tracking-wider">
+                      {book.academicLevel}
+                    </span>
+                  )}
                   <span className="px-4 py-1.5 bg-secondary-fixed text-on-secondary-fixed-variant font-label text-xs font-bold rounded-full uppercase tracking-wider">
                     {book.category === 'General' ? t('add_book.category.general') :
                      book.category === 'Valores y Ciudadanía' ? t('add_book.category.values') :
@@ -229,11 +244,6 @@ export const BookDetails = () => {
                     <BookOpen className="text-primary" size={16} />
                     {book.stock || 0} {t('book.label.stock')}
                   </span>
-                  {book.academicLevel && (
-                    <span className="flex items-center gap-2 px-3 py-1 bg-primary/10 text-primary rounded-full font-bold text-[10px] uppercase">
-                      {book.academicLevel}
-                    </span>
-                  )}
                 </div>
               </div>
 
@@ -285,7 +295,23 @@ export const BookDetails = () => {
                 <p className="text-on-surface-variant leading-relaxed mb-6 font-body">
                   {book.description || t('book.summary.empty')}
                 </p>
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-8 pt-6 border-t border-outline-variant/30">
+                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-8 pt-6 border-t border-outline-variant/30">
+                  {bookStage && (
+                    <div>
+                      <p className="text-xs font-bold text-primary uppercase mb-1">{t('book.label.educational_stage')}</p>
+                      <p className="text-sm">
+                        {bookStage === 'Primaria'
+                          ? t('catalog.stage.primaria')
+                          : t('catalog.stage.media')}
+                      </p>
+                    </div>
+                  )}
+                  {book.academicLevel && (
+                    <div>
+                      <p className="text-xs font-bold text-primary uppercase mb-1">{t('book.label.grade_year')}</p>
+                      <p className="text-sm">{book.academicLevel}</p>
+                    </div>
+                  )}
                   <div>
                     <p className="text-xs font-bold text-primary uppercase mb-1">{t('book.label.publisher')}</p>
                     <p className="text-sm">{book.publisher || 'N/A'}</p>

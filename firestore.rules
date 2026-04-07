@@ -47,6 +47,7 @@ service cloud.firestore {
              (!('isbn' in data) || (data.isbn is string && data.isbn.size() < 50)) &&
              (!('category' in data) || (data.category is string && data.category.size() < 100)) &&
              (!('academicLevel' in data) || (data.academicLevel is string && data.academicLevel.size() < 100)) &&
+             (!('educationalStage' in data) || (data.educationalStage in ['Primaria', 'Media Técnica'])) &&
              (!('publisher' in data) || (data.publisher is string && data.publisher.size() < 200)) &&
              (!('description' in data) || (data.description is string && data.description.size() < 5000)) &&
              (!('year' in data) || (data.year is number)) &&

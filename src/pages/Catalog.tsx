@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { collection, onSnapshot, query, where, orderBy } from 'firebase/firestore';
+import { collection, onSnapshot, query, orderBy } from 'firebase/firestore';
 import { db } from '../firebase';
 import { handleFirestoreError, OperationType } from '../lib/firestore-error';
 import { useLanguage } from '../contexts/LanguageContext';
@@ -18,7 +18,12 @@ import {
 import { cn } from '../lib/utils';
 import { motion } from 'motion/react';
 import { Link } from 'react-router-dom';
-import { CATEGORIES, PRIMARIA_LEVELS, MEDIA_TECNICA_LEVELS } from '../constants';
+import {
+  CATEGORIES,
+  PRIMARIA_LEVELS,
+  MEDIA_TECNICA_LEVELS,
+  resolveEducationalStage,
+} from '../constants';
 import { handleBookDownload } from '../lib/download-utils';
 
 import { useAuth } from '../contexts/AuthContext';
@@ -28,7 +33,8 @@ export const Catalog = () => {
   const { userData } = useAuth();
   const [books, setBooks] = useState<any[]>([]);
   const [filter, setFilter] = useState('Todos');
-  const [academicLevel, setAcademicLevel] = useState('Todos');
+  const [stageFilter, setStageFilter] = useState<'Todos' | 'Primaria' | 'Media Técnica'>('Todos');
+  const [gradeFilter, setGradeFilter] = useState('Todos');
   const [searchQuery, setSearchQuery] = useState('');
 
   const tips = [
@@ -58,14 +64,19 @@ export const Catalog = () => {
     return () => clearInterval(interval);
   }, [tips.length]);
 
-  const filteredBooks = books.filter(book => {
+  const filteredBooks = books.filter((book) => {
     const title = book.title || '';
     const author = book.author || '';
     const matchesCategory = filter === 'Todos' || book.category === filter;
-    const matchesLevel = academicLevel === 'Todos' || book.academicLevel === academicLevel;
-    const matchesSearch = title.toLowerCase().includes(searchQuery.toLowerCase()) || 
-                         author.toLowerCase().includes(searchQuery.toLowerCase());
-    return matchesCategory && matchesLevel && matchesSearch;
+    const bookStage = resolveEducationalStage(book);
+    const matchesStage =
+      stageFilter === 'Todos' || (bookStage !== null && bookStage === stageFilter);
+    const matchesGrade =
+      gradeFilter === 'Todos' || book.academicLevel === gradeFilter;
+    const matchesSearch =
+      title.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      author.toLowerCase().includes(searchQuery.toLowerCase());
+    return matchesCategory && matchesStage && matchesGrade && matchesSearch;
   });
 
   // Dynamic recommendations
@@ -85,8 +96,6 @@ export const Catalog = () => {
     .slice(0, 2);
 
   const categories = ['Todos', ...CATEGORIES];
-  const primariaLevels = PRIMARIA_LEVELS;
-  const mediaTecnicaLevels = MEDIA_TECNICA_LEVELS;
 
   return (
     <div className="editorial-asymmetry">
@@ -161,8 +170,55 @@ export const Catalog = () => {
           </div>
         </div>
 
+        <div className="flex flex-col sm:flex-row flex-wrap gap-4 mb-8 items-stretch sm:items-end">
+          <div className="flex flex-col gap-1 min-w-[180px]">
+            <label className="text-[10px] font-bold uppercase tracking-widest text-on-surface-variant ml-1">
+              {t('catalog.filter.by_stage')}
+            </label>
+            <select
+              value={stageFilter}
+              onChange={(e) =>
+                setStageFilter(e.target.value as 'Todos' | 'Primaria' | 'Media Técnica')
+              }
+              className="bg-surface-container-high border-none rounded-xl py-2.5 px-4 text-sm font-bold text-on-surface focus:ring-2 focus:ring-primary"
+            >
+              <option value="Todos">{t('catalog.filter.all')}</option>
+              <option value="Primaria">{t('catalog.stage.primaria')}</option>
+              <option value="Media Técnica">{t('catalog.stage.media')}</option>
+            </select>
+          </div>
+          <div className="flex flex-col gap-1 min-w-[200px] flex-1 max-w-md">
+            <label className="text-[10px] font-bold uppercase tracking-widest text-on-surface-variant ml-1">
+              {t('catalog.filter.by_grade')}
+            </label>
+            <select
+              value={gradeFilter}
+              onChange={(e) => setGradeFilter(e.target.value)}
+              className="bg-surface-container-high border-none rounded-xl py-2.5 px-4 text-sm font-bold text-on-surface focus:ring-2 focus:ring-primary w-full"
+            >
+              <option value="Todos">{t('catalog.filter.all')}</option>
+              <optgroup label={t('catalog.stage.primaria')}>
+                {PRIMARIA_LEVELS.map((lvl) => (
+                  <option key={lvl} value={lvl}>
+                    {lvl}
+                  </option>
+                ))}
+              </optgroup>
+              <optgroup label={t('catalog.stage.media')}>
+                {MEDIA_TECNICA_LEVELS.map((lvl) => (
+                  <option key={lvl} value={lvl}>
+                    {lvl}
+                  </option>
+                ))}
+              </optgroup>
+            </select>
+          </div>
+        </div>
+
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
-          {filteredBooks.length > 0 ? filteredBooks.map((book, i) => (
+          {filteredBooks.length > 0 ? filteredBooks.map((book, i) => {
+            const bookStage = resolveEducationalStage(book);
+            return (
             <motion.div
               key={book.id}
               initial={{ opacity: 0, y: 20 }}
@@ -197,6 +253,13 @@ export const Catalog = () => {
                   </div>
                 </div>
                 <div className="flex flex-wrap gap-2 mb-4">
+                  {bookStage && (
+                    <div className="px-3 py-1 bg-secondary/10 text-secondary rounded-lg text-[10px] font-bold uppercase inline-block">
+                      {bookStage === 'Primaria'
+                        ? t('catalog.stage.primaria')
+                        : t('catalog.stage.media')}
+                    </div>
+                  )}
                   {book.academicLevel && (
                     <div className="px-3 py-1 bg-primary/5 text-primary rounded-lg text-[10px] font-bold uppercase inline-block">
                       {book.academicLevel}
@@ -219,7 +282,8 @@ export const Catalog = () => {
                 </div>
               </div>
             </motion.div>
-          )) : (
+          );
+          }) : (
             <div className="col-span-full p-12 text-center text-on-surface-variant">
               {t('catalog.no_books')}
             </div>

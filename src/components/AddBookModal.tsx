@@ -9,9 +9,48 @@ import { handleFirestoreError, OperationType } from '../lib/firestore-error';
 import { useLanguage } from '../contexts/LanguageContext';
 import { useModal } from '../contexts/ModalContext';
 import { cn } from '../lib/utils';
-import { CATEGORIES } from '../constants';
-import { extractTextFromPdf } from '../lib/pdf-utils';
-import { analyzeBookMetadata } from '../services/geminiService';
+import { analyzePdfFile, analyzePdfFromUrl } from '../services/pdfImportAnalysis';
+import {
+  CATEGORIES,
+  CerpaCategory,
+  getEducationalStageFromLevel,
+  normalizeAcademicLevel,
+  normalizeCerpaCategory,
+  PRIMARIA_LEVELS,
+  MEDIA_TECNICA_LEVELS,
+} from '../constants';
+import type { TranslationKey } from '../lib/translations';
+
+const MATERIA_LABEL_KEY: Record<CerpaCategory, TranslationKey> = {
+  General: 'add_book.category.general',
+  'Valores y Ciudadanía': 'add_book.category.values',
+  Empleabilidad: 'add_book.category.employability',
+  'Ciencias I': 'add_book.category.science1',
+  'Ciencias II': 'add_book.category.science2',
+  'Lenguaje y Comunicación': 'add_book.category.language',
+  Sociales: 'add_book.category.social',
+  'Labor Social': 'add_book.category.labor_social',
+  'Bienestar Socio Emocional': 'add_book.category.bienestar',
+  Proyecto: 'add_book.category.proyecto',
+  DPOSA: 'add_book.category.dposa',
+};
+
+type BulkCatalogRow = {
+  file: File;
+  coverUrl: string;
+  totalPages: number;
+  title: string;
+  author: string;
+  publisher: string;
+  pages: number;
+  category: CerpaCategory;
+  academicLevel: string;
+  educationalStage: string;
+  year: number;
+  description: string;
+  isbn: string;
+  language: string;
+};
 
 interface AddBookModalProps {
   isOpen: boolean;
@@ -34,6 +73,7 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({ isOpen, onClose }) =
   const [cloudSearch, setCloudSearch] = useState('');
   const [cloudLoading, setCloudLoading] = useState(false);
   const [analyzingCloud, setAnalyzingCloud] = useState(false);
+  const [analyzingLocalPdf, setAnalyzingLocalPdf] = useState(false);
   const [warehouseSearch, setWarehouseSearch] = useState('');
   const [warehouseLoading, setWarehouseLoading] = useState(false);
   const [bookToDelete, setBookToDelete] = useState<any>(null);
@@ -41,8 +81,11 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({ isOpen, onClose }) =
   const [showCancelConfirm, setShowCancelConfirm] = useState(false);
   const isCancelledRef = useRef(false);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const pdfAnalysisAbortRef = useRef<AbortController | null>(null);
   
   const [importProgress, setImportProgress] = useState({ current: 0, total: 0, phase: '' as 'uploading' | 'analyzing' | '' });
+  const [bulkCatalogStep, setBulkCatalogStep] = useState<'pick' | 'review'>('pick');
+  const [bulkPreviewRows, setBulkPreviewRows] = useState<BulkCatalogRow[]>([]);
   
   const [formData, setFormData] = useState({
     title: '',
@@ -51,6 +94,7 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({ isOpen, onClose }) =
     description: '',
     category: 'General',
     academicLevel: '3er Año',
+    educationalStage: 'Media Técnica',
     year: new Date().getFullYear(),
     pages: 0,
     language: 'Español',
@@ -63,12 +107,16 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({ isOpen, onClose }) =
   // Reset local state when modal closes, but KEEP isUnlocked (managed by context)
   useEffect(() => {
     if (!isOpen) {
+      pdfAnalysisAbortRef.current?.abort();
       setPassword('');
       setShowPassword(false);
       setError('');
       setPdfFile(null);
       setBulkFiles([]);
+      setBulkCatalogStep('pick');
+      setBulkPreviewRows([]);
       setImportMode('single');
+      setAnalyzingLocalPdf(false);
     }
   }, [isOpen]);
 
@@ -103,19 +151,28 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({ isOpen, onClose }) =
     setAnalyzingCloud(true);
     setImportMode('single');
     try {
-      const { text, coverUrl, totalPages } = await extractTextFromPdf(file.url);
-      const metadata = await analyzeBookMetadata(text, totalPages);
-      
+      const { coverUrl, totalPages, metadata } = await analyzePdfFromUrl(file.url);
+
       if (metadata) {
+        const academicLevel = normalizeAcademicLevel(metadata.academicLevel);
+        const educationalStage =
+          typeof metadata.educationalStage === 'string' &&
+          (metadata.educationalStage === 'Primaria' || metadata.educationalStage === 'Media Técnica')
+            ? metadata.educationalStage
+            : getEducationalStageFromLevel(academicLevel) || 'Media Técnica';
         setFormData({
           title: metadata.title || file.name.replace('.pdf', ''),
           author: metadata.author || '',
           isbn: metadata.isbn || '',
           description: metadata.description || '',
-          category: metadata.category || 'General',
-          academicLevel: metadata.academicLevel || '3er Año',
+          category: normalizeCerpaCategory(metadata.category),
+          academicLevel,
+          educationalStage,
           year: metadata.year || new Date().getFullYear(),
-          pages: metadata.pages || 0,
+          pages:
+            typeof metadata.pages === 'number' && metadata.pages > 0
+              ? metadata.pages
+              : totalPages,
           language: metadata.language || 'Español',
           stock: 1,
           publisher: metadata.publisher || '',
@@ -127,7 +184,8 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({ isOpen, onClose }) =
           ...prev,
           title: file.name.replace('.pdf', ''),
           pdfUrl: file.url,
-          coverUrl: coverUrl || ''
+          coverUrl: coverUrl || '',
+          pages: totalPages || prev.pages
         }));
       }
     } catch (err) {
@@ -187,22 +245,83 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({ isOpen, onClose }) =
   };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files[0]) {
-      const file = e.target.files[0];
-      setPdfFile(file);
-      
-      setFormData(prev => ({
-        ...prev,
-        title: prev.title || file.name.replace('.pdf', ''),
-      }));
-    }
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    pdfAnalysisAbortRef.current?.abort();
+    const ac = new AbortController();
+    pdfAnalysisAbortRef.current = ac;
+
+    setPdfFile(file);
+    setFormData(prev => ({
+      ...prev,
+      title: prev.title || file.name.replace('.pdf', ''),
+    }));
+
+    void (async () => {
+      setAnalyzingLocalPdf(true);
+      try {
+        const { coverUrl, totalPages, metadata } = await analyzePdfFile(file, ac.signal);
+        if (ac.signal.aborted) return;
+
+        if (metadata) {
+          setFormData(prev => {
+            const academicLevel = normalizeAcademicLevel(
+              metadata.academicLevel || prev.academicLevel
+            );
+            const educationalStage =
+              typeof metadata.educationalStage === 'string' &&
+              (metadata.educationalStage === 'Primaria' ||
+                metadata.educationalStage === 'Media Técnica')
+                ? metadata.educationalStage
+                : getEducationalStageFromLevel(academicLevel) || 'Media Técnica';
+            return {
+              ...prev,
+              title: metadata.title || file.name.replace('.pdf', ''),
+              author: metadata.author || prev.author,
+              isbn: metadata.isbn || prev.isbn,
+              description: metadata.description || prev.description,
+              category: normalizeCerpaCategory(metadata.category || prev.category),
+              academicLevel,
+              educationalStage,
+              year: typeof metadata.year === 'number' ? metadata.year : prev.year,
+              pages:
+                typeof metadata.pages === 'number' && metadata.pages > 0
+                  ? metadata.pages
+                  : totalPages || prev.pages,
+              language: metadata.language || prev.language,
+              publisher: metadata.publisher || prev.publisher,
+              coverUrl: coverUrl || prev.coverUrl,
+            };
+          });
+        } else {
+          setFormData(prev => ({
+            ...prev,
+            pages: totalPages || prev.pages,
+            coverUrl: coverUrl || prev.coverUrl,
+          }));
+        }
+      } catch (err) {
+        if (err instanceof Error && (err.message === 'Aborted' || err.name === 'AbortError')) {
+          return;
+        }
+        console.error('Error analyzing uploaded PDF:', err);
+      } finally {
+        if (!ac.signal.aborted) {
+          setAnalyzingLocalPdf(false);
+        }
+      }
+    })();
+
+    e.target.value = '';
   };
 
   const handleBulkFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files) {
       const newFiles = Array.from(e.target.files).filter(file => file.type === 'application/pdf');
       setBulkFiles(prev => [...prev, ...newFiles]);
-      // Reset input value to allow selecting same files again if needed
+      setBulkCatalogStep('pick');
+      setBulkPreviewRows([]);
       e.target.value = '';
     }
   };
@@ -213,69 +332,135 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({ isOpen, onClose }) =
 
   const clearBulkFiles = () => {
     setBulkFiles([]);
+    setBulkCatalogStep('pick');
+    setBulkPreviewRows([]);
   };
 
-  const handleBulkSubmit = async (e: React.FormEvent) => {
+  const updateBulkPreviewRow = (index: number, patch: Partial<BulkCatalogRow>) => {
+    setBulkPreviewRows((rows) =>
+      rows.map((row, i) => (i === index ? { ...row, ...patch } : row))
+    );
+  };
+
+  const handleBulkAnalyze = async (e: React.FormEvent) => {
     e.preventDefault();
     if (bulkFiles.length === 0) return;
     setLoading(true);
     isCancelledRef.current = false;
-    setImportProgress({ current: 0, total: bulkFiles.length, phase: 'uploading' });
+    setImportProgress({ current: 0, total: bulkFiles.length, phase: 'analyzing' });
+    const rows: BulkCatalogRow[] = [];
     try {
-      const booksRef = collection(db, 'books');
       for (let i = 0; i < bulkFiles.length; i++) {
         if (isCancelledRef.current) break;
-        setImportProgress(prev => ({ ...prev, current: i + 1, phase: 'uploading' }));
+        setImportProgress((prev) => ({ ...prev, current: i + 1, phase: 'analyzing' }));
         const file = bulkFiles[i];
-        
-        // 1. Extract Text & Cover (Local)
-        let pdfData = { text: '', coverUrl: '', totalPages: 0 };
+        let coverUrl = '';
+        let totalPages = 0;
+        let metadata = null as Awaited<ReturnType<typeof analyzePdfFile>>['metadata'];
         try {
-          pdfData = await extractTextFromPdf(file);
+          const result = await analyzePdfFile(file);
+          coverUrl = result.coverUrl;
+          totalPages = result.totalPages;
+          metadata = result.metadata;
         } catch (err) {
-          console.warn("Could not extract text from:", file.name);
+          console.warn('Could not extract or analyze:', file.name, err);
         }
+        const pages =
+          metadata && typeof metadata.pages === 'number' && metadata.pages > 0
+            ? metadata.pages
+            : totalPages;
+        const academicLevel = normalizeAcademicLevel(
+          metadata?.academicLevel || t('add_book.imported_level')
+        );
+        const educationalStage =
+          metadata &&
+          typeof metadata.educationalStage === 'string' &&
+          (metadata.educationalStage === 'Primaria' ||
+            metadata.educationalStage === 'Media Técnica')
+            ? metadata.educationalStage
+            : getEducationalStageFromLevel(academicLevel) || 'Media Técnica';
+        rows.push({
+          file,
+          coverUrl,
+          totalPages,
+          title: metadata?.title || file.name.replace(/\.pdf$/i, ''),
+          author: metadata?.author || '',
+          publisher: metadata?.publisher || '',
+          pages,
+          category: normalizeCerpaCategory(metadata?.category),
+          academicLevel,
+          educationalStage,
+          year:
+            typeof metadata?.year === 'number' ? metadata.year : new Date().getFullYear(),
+          description: metadata?.description || '',
+          isbn: metadata?.isbn || '',
+          language: metadata?.language || 'Español',
+        });
+      }
+      if (!isCancelledRef.current) {
+        setBulkPreviewRows(rows);
+        setBulkCatalogStep('review');
+      }
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, 'books');
+    } finally {
+      setLoading(false);
+      setImportProgress({ current: 0, total: 0, phase: '' });
+    }
+  };
 
+  const handleBulkConfirmSave = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (bulkPreviewRows.length === 0) return;
+    setLoading(true);
+    isCancelledRef.current = false;
+    setImportProgress({ current: 0, total: bulkPreviewRows.length, phase: 'uploading' });
+    try {
+      const booksRef = collection(db, 'books');
+      for (let i = 0; i < bulkPreviewRows.length; i++) {
         if (isCancelledRef.current) break;
+        const row = bulkPreviewRows[i];
+        setImportProgress((prev) => ({ ...prev, current: i + 1, phase: 'uploading' }));
 
-        // 2. Analyze with AI (Gemini)
-        setImportProgress(prev => ({ ...prev, phase: 'analyzing' }));
-        let metadata = null;
-        if (pdfData.text) {
-          metadata = await analyzeBookMetadata(pdfData.text, pdfData.totalPages);
-        }
-
-        if (isCancelledRef.current) break;
-
-        // 3. Upload to Firebase Storage
-        setImportProgress(prev => ({ ...prev, phase: 'uploading' }));
         let pdfUrl = '';
         try {
-          const storageRef = ref(storage, `pdfs/${Date.now()}_${file.name}`);
-          const uploadResult = await uploadBytes(storageRef, file);
+          const storageRef = ref(storage, `pdfs/${Date.now()}_${row.file.name}`);
+          const uploadResult = await uploadBytes(storageRef, row.file);
           pdfUrl = await getDownloadURL(uploadResult.ref);
         } catch (uploadErr) {
           if (isCancelledRef.current) break;
-          console.error("Upload failed for:", file.name, uploadErr);
+          console.error('Upload failed for:', row.file.name, uploadErr);
           continue;
         }
 
         if (isCancelledRef.current) break;
 
-        // 4. Save to Firestore
+        const category = normalizeCerpaCategory(row.category);
+        const academicLevel = normalizeAcademicLevel(
+          row.academicLevel || t('add_book.imported_level')
+        );
+        const educationalStage =
+          row.educationalStage === 'Primaria' || row.educationalStage === 'Media Técnica'
+            ? row.educationalStage
+            : getEducationalStageFromLevel(academicLevel) || 'Media Técnica';
         await addDoc(booksRef, {
-          title: metadata?.title || file.name.replace('.pdf', ''),
-          author: metadata?.author || t('add_book.imported_author'),
-          category: metadata?.category || 'General',
-          academicLevel: metadata?.academicLevel || t('add_book.imported_level'),
-          publisher: metadata?.publisher || 'N/A',
-          description: metadata?.description || '',
-          year: metadata?.year || new Date().getFullYear(),
-          pages: pdfData.totalPages || 0,
+          title: row.title || row.file.name.replace(/\.pdf$/i, ''),
+          author: row.author || t('add_book.imported_author'),
+          category,
+          academicLevel,
+          educationalStage,
+          publisher: row.publisher || 'N/A',
+          description: row.description || '',
+          year: row.year || new Date().getFullYear(),
+          pages: row.pages > 0 ? row.pages : row.totalPages || 0,
           stock: 1,
-          pdfUrl: pdfUrl,
-          coverUrl: pdfData.coverUrl || 'https://images.unsplash.com/photo-1543005157-86fc40027773?q=80&w=800&auto=format&fit=crop',
-          createdAt: new Date().toISOString()
+          pdfUrl,
+          isbn: row.isbn || '',
+          language: row.language || 'Español',
+          coverUrl:
+            row.coverUrl ||
+            'https://images.unsplash.com/photo-1543005157-86fc40027773?q=80&w=800&auto=format&fit=crop',
+          createdAt: new Date().toISOString(),
         });
       }
       if (!isCancelledRef.current) {
@@ -301,10 +486,19 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({ isOpen, onClose }) =
         pdfUrl = await getDownloadURL(uploadResult.ref);
       }
 
+      const academicLevel = normalizeAcademicLevel(formData.academicLevel);
+      const educationalStage =
+        formData.educationalStage === 'Primaria' ||
+        formData.educationalStage === 'Media Técnica'
+          ? formData.educationalStage
+          : getEducationalStageFromLevel(academicLevel) || 'Media Técnica';
       const finalData = {
         ...formData,
+        category: normalizeCerpaCategory(formData.category),
+        academicLevel,
+        educationalStage,
         pdfUrl: pdfUrl,
-        createdAt: new Date().toISOString()
+        createdAt: new Date().toISOString(),
       };
 
       await addDoc(collection(db, 'books'), finalData);
@@ -317,6 +511,7 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({ isOpen, onClose }) =
         description: '',
         category: 'General',
         academicLevel: '3er Año',
+        educationalStage: 'Media Técnica',
         year: new Date().getFullYear(),
         pages: 0,
         language: 'Español',
@@ -673,14 +868,18 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({ isOpen, onClose }) =
                 </div>
               ) : importMode === 'single' ? (
                 <form onSubmit={handleSubmit} className="space-y-6">
-                  {analyzingCloud && (
+                  {(analyzingCloud || analyzingLocalPdf) && (
                     <div className="bg-primary/5 border border-primary/20 rounded-2xl p-4 flex items-center gap-4 animate-pulse">
                       <div className="p-2 bg-primary/10 rounded-lg text-primary">
                         <Loader2 className="animate-spin" size={20} />
                       </div>
                       <div className="flex-1">
-                        <p className="text-sm font-bold text-primary">{t('add_book.cloud.analyzing')}</p>
-                        <p className="text-[10px] text-on-surface-variant uppercase tracking-widest">Extrayendo metadatos y portada...</p>
+                        <p className="text-sm font-bold text-primary">
+                          {analyzingCloud ? t('add_book.cloud.analyzing') : t('add_book.pdf.analyzing')}
+                        </p>
+                        <p className="text-[10px] text-on-surface-variant uppercase tracking-widest">
+                          {t('add_book.pdf.analyzing_sub')}
+                        </p>
                       </div>
                     </div>
                   )}
@@ -730,19 +929,22 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({ isOpen, onClose }) =
                       />
                     </div>
                     <div className="space-y-2">
-                      <label className="text-xs font-bold text-on-surface-variant uppercase tracking-wider ml-1">{t('add_book.label.category')}</label>
+                      <label className="text-xs font-bold text-on-surface-variant uppercase tracking-wider ml-1">{t('add_book.label.materia')}</label>
                       <select
                         value={formData.category}
-                        onChange={(e) => setFormData({...formData, category: e.target.value})}
+                        onChange={(e) =>
+                          setFormData({
+                            ...formData,
+                            category: normalizeCerpaCategory(e.target.value),
+                          })
+                        }
                         className="w-full bg-surface-container-highest border-none rounded-xl py-3 px-4 text-sm focus:ring-2 focus:ring-primary transition-all"
                       >
-                        <option value="General">{t('add_book.category.general')}</option>
-                        <option value="Valores y Ciudadanía">{t('add_book.category.values')}</option>
-                        <option value="Empleabilidad">{t('add_book.category.employability')}</option>
-                        <option value="Ciencias I">{t('add_book.category.science1')}</option>
-                        <option value="Ciencias II">{t('add_book.category.science2')}</option>
-                        <option value="Lenguaje y Comunicación">{t('add_book.category.language')}</option>
-                        <option value="Sociales">{t('add_book.category.social')}</option>
+                        {CATEGORIES.map((c) => (
+                          <option key={c} value={c}>
+                            {t(MATERIA_LABEL_KEY[c])}
+                          </option>
+                        ))}
                       </select>
                     </div>
                     <div className="space-y-2">
@@ -754,13 +956,72 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({ isOpen, onClose }) =
                         className="w-full bg-surface-container-highest border-none rounded-xl py-3 px-4 text-sm focus:ring-2 focus:ring-primary transition-all"
                       />
                     </div>
+                    <div className="space-y-2 sm:col-span-2">
+                      <label className="text-xs font-bold text-on-surface-variant uppercase tracking-wider ml-1">
+                        {t('add_book.label.level_recommended')}
+                      </label>
+                      <div className="flex flex-col sm:flex-row gap-3 sm:items-center">
+                        <select
+                          value={formData.academicLevel}
+                          onChange={(e) => {
+                            const academicLevel = normalizeAcademicLevel(e.target.value);
+                            setFormData({
+                              ...formData,
+                              academicLevel,
+                              educationalStage:
+                                getEducationalStageFromLevel(academicLevel) || 'Media Técnica',
+                            });
+                          }}
+                          className="flex-1 w-full bg-surface-container-highest border-none rounded-xl py-3 px-4 text-sm focus:ring-2 focus:ring-primary transition-all"
+                        >
+                          <optgroup label={t('catalog.stage.primaria')}>
+                            {PRIMARIA_LEVELS.map((lvl) => (
+                              <option key={lvl} value={lvl}>
+                                {lvl}
+                              </option>
+                            ))}
+                          </optgroup>
+                          <optgroup label={t('catalog.stage.media')}>
+                            {MEDIA_TECNICA_LEVELS.map((lvl) => (
+                              <option key={lvl} value={lvl}>
+                                {lvl}
+                              </option>
+                            ))}
+                          </optgroup>
+                        </select>
+                        <span className="text-xs font-bold px-3 py-2 rounded-xl bg-secondary/15 text-secondary whitespace-nowrap">
+                          {formData.educationalStage === 'Primaria'
+                            ? t('catalog.stage.primaria')
+                            : t('catalog.stage.media')}
+                        </span>
+                      </div>
+                    </div>
                     <div className="space-y-2">
-                      <label className="text-xs font-bold text-on-surface-variant uppercase tracking-wider ml-1">{t('add_book.label.level')}</label>
+                      <label className="text-xs font-bold text-on-surface-variant uppercase tracking-wider ml-1">{t('add_book.label.pages')}</label>
                       <input
-                        type="text"
-                        value={formData.academicLevel}
-                        onChange={(e) => setFormData({...formData, academicLevel: e.target.value})}
-                        placeholder="Ej. 4to Grado"
+                        type="number"
+                        min={0}
+                        value={formData.pages || ''}
+                        onChange={(e) =>
+                          setFormData({
+                            ...formData,
+                            pages: parseInt(e.target.value, 10) || 0,
+                          })
+                        }
+                        className="w-full bg-surface-container-highest border-none rounded-xl py-3 px-4 text-sm focus:ring-2 focus:ring-primary transition-all"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-xs font-bold text-on-surface-variant uppercase tracking-wider ml-1">{t('add_book.label.year')}</label>
+                      <input
+                        type="number"
+                        value={formData.year || ''}
+                        onChange={(e) =>
+                          setFormData({
+                            ...formData,
+                            year: parseInt(e.target.value, 10) || new Date().getFullYear(),
+                          })
+                        }
                         className="w-full bg-surface-container-highest border-none rounded-xl py-3 px-4 text-sm focus:ring-2 focus:ring-primary transition-all"
                       />
                     </div>
@@ -800,9 +1061,58 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({ isOpen, onClose }) =
                     <textarea
                       value={formData.description}
                       onChange={(e) => setFormData({...formData, description: e.target.value})}
-                      className="w-full bg-surface-container-highest border-none rounded-xl py-3 px-4 text-sm focus:ring-2 focus:ring-primary transition-all h-24 resize-none"
+                      className="w-full bg-surface-container-highest border-none rounded-xl py-3 px-4 text-sm focus:ring-2 focus:ring-primary transition-all min-h-[120px] resize-y"
                     />
                   </div>
+
+                  {(pdfFile || formData.pdfUrl) && !analyzingLocalPdf && !analyzingCloud && (
+                    <div className="rounded-2xl border border-primary/25 bg-primary/5 p-4 space-y-3">
+                      <div className="flex items-center gap-2 text-primary">
+                        <Table size={18} />
+                        <span className="text-sm font-bold">{t('add_book.catalog_preview_title')}</span>
+                      </div>
+                      <p className="text-[11px] text-on-surface-variant">{t('add_book.catalog_preview_hint')}</p>
+                      <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-2 text-xs">
+                        <div>
+                          <dt className="text-on-surface-variant font-bold uppercase text-[10px]">{t('add_book.label.title')}</dt>
+                          <dd className="text-on-surface mt-0.5">{formData.title || '—'}</dd>
+                        </div>
+                        <div>
+                          <dt className="text-on-surface-variant font-bold uppercase text-[10px]">{t('add_book.label.author')}</dt>
+                          <dd className="text-on-surface mt-0.5">{formData.author || '—'}</dd>
+                        </div>
+                        <div>
+                          <dt className="text-on-surface-variant font-bold uppercase text-[10px]">{t('add_book.label.publisher')}</dt>
+                          <dd className="text-on-surface mt-0.5">{formData.publisher || '—'}</dd>
+                        </div>
+                        <div>
+                          <dt className="text-on-surface-variant font-bold uppercase text-[10px]">{t('add_book.label.pages')}</dt>
+                          <dd className="text-on-surface mt-0.5">{formData.pages > 0 ? formData.pages : '—'}</dd>
+                        </div>
+                        <div className="sm:col-span-2">
+                          <dt className="text-on-surface-variant font-bold uppercase text-[10px]">{t('add_book.label.materia')}</dt>
+                          <dd className="text-on-surface mt-0.5">{t(MATERIA_LABEL_KEY[normalizeCerpaCategory(formData.category)])}</dd>
+                        </div>
+                        <div>
+                          <dt className="text-on-surface-variant font-bold uppercase text-[10px]">{t('book.label.educational_stage')}</dt>
+                          <dd className="text-on-surface mt-0.5">
+                            {formData.educationalStage === 'Primaria'
+                              ? t('catalog.stage.primaria')
+                              : t('catalog.stage.media')}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt className="text-on-surface-variant font-bold uppercase text-[10px]">{t('add_book.label.level')}</dt>
+                          <dd className="text-on-surface mt-0.5">{formData.academicLevel || '—'}</dd>
+                        </div>
+                        <div className="sm:col-span-2">
+                          <dt className="text-on-surface-variant font-bold uppercase text-[10px]">{t('add_book.label.description')}</dt>
+                          <dd className="text-on-surface mt-0.5 whitespace-pre-wrap line-clamp-6">{formData.description || '—'}</dd>
+                        </div>
+                      </dl>
+                    </div>
+                  )}
+
                   <div className="flex gap-4 pt-4">
                     <button
                       type="button"
@@ -820,7 +1130,7 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({ isOpen, onClose }) =
                     </button>
                     <button
                       type="submit"
-                      disabled={loading}
+                      disabled={loading || analyzingLocalPdf || analyzingCloud}
                       className="flex-[2] py-4 bg-primary text-white font-bold rounded-xl hover:bg-primary-container transition-all shadow-md flex items-center justify-center gap-2"
                     >
                       {loading ? <Loader2 size={20} className="animate-spin" /> : <Plus size={20} />}
@@ -829,112 +1139,301 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({ isOpen, onClose }) =
                   </div>
                 </form>
               ) : (
-                <form onSubmit={handleBulkSubmit} className="space-y-6">
+                <form
+                  onSubmit={bulkCatalogStep === 'pick' ? handleBulkAnalyze : handleBulkConfirmSave}
+                  className="space-y-6"
+                >
                   <div className="space-y-4">
-                    <div className="flex items-center justify-between">
-                      <label className="text-xs font-bold text-on-surface-variant uppercase tracking-wider ml-1">
-                        {t('add_book.bulk')}
-                      </label>
-                      {bulkFiles.length > 0 && !loading && (
-                        <button
-                          type="button"
-                          onClick={clearBulkFiles}
-                          className="text-[10px] font-bold text-red-500 hover:text-red-600 uppercase tracking-widest transition-colors"
-                        >
-                          {t('add_book.action.delete')} {t('catalog.filter.all')}
-                        </button>
-                      )}
-                    </div>
-
-                    <div className="relative">
-                      <input
-                        type="file"
-                        accept=".pdf"
-                        multiple
-                        onChange={handleBulkFileChange}
-                        className="hidden"
-                        id="bulk-pdf-upload"
-                        disabled={loading}
-                      />
-                      <label
-                        htmlFor="bulk-pdf-upload"
-                        className={cn(
-                          "flex flex-col items-center justify-center gap-4 w-full bg-surface-container-highest border-2 border-dashed border-outline-variant/30 rounded-[2rem] py-12 px-4 text-sm text-on-surface-variant transition-all cursor-pointer",
-                          loading ? "opacity-50 cursor-not-allowed" : "hover:border-primary hover:text-primary"
-                        )}
-                      >
-                        <div className="w-16 h-16 bg-primary/10 rounded-full flex items-center justify-center text-primary">
-                          <Upload size={32} />
+                    {bulkCatalogStep === 'pick' ? (
+                      <>
+                        <div className="flex items-center justify-between">
+                          <label className="text-xs font-bold text-on-surface-variant uppercase tracking-wider ml-1">
+                            {t('add_book.bulk')}
+                          </label>
+                          {bulkFiles.length > 0 && !loading && (
+                            <button
+                              type="button"
+                              onClick={clearBulkFiles}
+                              className="text-[10px] font-bold text-red-500 hover:text-red-600 uppercase tracking-widest transition-colors"
+                            >
+                              {t('add_book.action.delete')} {t('catalog.filter.all')}
+                            </button>
+                          )}
                         </div>
-                        <div className="text-center">
-                          <p className="font-bold text-base mb-1">
-                            {t('add_book.bulk_placeholder')}
-                          </p>
-                          <p className="text-[10px] opacity-60 uppercase tracking-widest">{t('add_book.import_info')}</p>
-                        </div>
-                      </label>
-                    </div>
 
-                    {/* Selected Files List */}
-                    <AnimatePresence>
-                      {bulkFiles.length > 0 && (
-                        <motion.div
-                          initial={{ opacity: 0, y: 10 }}
-                          animate={{ opacity: 1, y: 0 }}
-                          exit={{ opacity: 0, y: 10 }}
-                          className="bg-surface-container-lowest border border-outline-variant/20 rounded-2xl overflow-hidden"
-                        >
-                          <div className="max-h-[200px] overflow-y-auto scrollbar-thin scrollbar-thumb-primary/20">
-                            <div className="divide-y divide-outline-variant/10">
-                              {bulkFiles.map((file, idx) => (
-                                <div key={`${file.name}-${idx}`} className="flex items-center justify-between px-4 py-3 group hover:bg-primary/5 transition-colors">
-                                  <div className="flex items-center gap-3 min-w-0">
-                                    <div className="w-8 h-8 bg-primary/10 rounded-lg flex items-center justify-center text-primary flex-shrink-0">
-                                      <FileText size={16} />
-                                    </div>
-                                    <div className="min-w-0">
-                                      <p className="text-xs font-bold text-on-surface truncate" title={file.name}>
-                                        {file.name}
-                                      </p>
-                                      <p className="text-[10px] text-on-surface-variant">
-                                        {(file.size / (1024 * 1024)).toFixed(2)} MB
-                                      </p>
-                                    </div>
-                                  </div>
-                                  {!loading && (
-                                    <button
-                                      type="button"
-                                      onClick={() => removeBulkFile(idx)}
-                                      className="p-2 text-on-surface-variant hover:text-red-500 transition-colors opacity-0 group-hover:opacity-100"
-                                    >
-                                      <Trash2 size={16} />
-                                    </button>
-                                  )}
-                                </div>
-                              ))}
+                        <div className="relative">
+                          <input
+                            type="file"
+                            accept=".pdf"
+                            multiple
+                            onChange={handleBulkFileChange}
+                            className="hidden"
+                            id="bulk-pdf-upload"
+                            disabled={loading}
+                          />
+                          <label
+                            htmlFor="bulk-pdf-upload"
+                            className={cn(
+                              'flex flex-col items-center justify-center gap-4 w-full bg-surface-container-highest border-2 border-dashed border-outline-variant/30 rounded-[2rem] py-12 px-4 text-sm text-on-surface-variant transition-all cursor-pointer',
+                              loading
+                                ? 'opacity-50 cursor-not-allowed'
+                                : 'hover:border-primary hover:text-primary'
+                            )}
+                          >
+                            <div className="w-16 h-16 bg-primary/10 rounded-full flex items-center justify-center text-primary">
+                              <Upload size={32} />
                             </div>
-                          </div>
-                          <div className="bg-surface-container-highest px-4 py-2 flex justify-between items-center border-t border-outline-variant/20">
-                            <span className="text-[10px] font-bold text-on-surface-variant uppercase tracking-widest">
-                              {bulkFiles.length} {t('add_book.files_selected')}
-                            </span>
-                            <span className="text-[10px] font-bold text-primary uppercase tracking-widest">
-                              {(bulkFiles.reduce((acc, f) => acc + f.size, 0) / (1024 * 1024)).toFixed(2)} MB Total
-                            </span>
-                          </div>
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
+                            <div className="text-center">
+                              <p className="font-bold text-base mb-1">{t('add_book.bulk_placeholder')}</p>
+                              <p className="text-[10px] opacity-60 uppercase tracking-widest">
+                                {t('add_book.import_info')}
+                              </p>
+                            </div>
+                          </label>
+                        </div>
 
-                    {/* Progress Bar */}
-                    {loading && (
+                        <AnimatePresence>
+                          {bulkFiles.length > 0 && (
+                            <motion.div
+                              initial={{ opacity: 0, y: 10 }}
+                              animate={{ opacity: 1, y: 0 }}
+                              exit={{ opacity: 0, y: 10 }}
+                              className="bg-surface-container-lowest border border-outline-variant/20 rounded-2xl overflow-hidden"
+                            >
+                              <div className="max-h-[200px] overflow-y-auto scrollbar-thin scrollbar-thumb-primary/20">
+                                <div className="divide-y divide-outline-variant/10">
+                                  {bulkFiles.map((file, idx) => (
+                                    <div
+                                      key={`${file.name}-${idx}`}
+                                      className="flex items-center justify-between px-4 py-3 group hover:bg-primary/5 transition-colors"
+                                    >
+                                      <div className="flex items-center gap-3 min-w-0">
+                                        <div className="w-8 h-8 bg-primary/10 rounded-lg flex items-center justify-center text-primary flex-shrink-0">
+                                          <FileText size={16} />
+                                        </div>
+                                        <div className="min-w-0">
+                                          <p
+                                            className="text-xs font-bold text-on-surface truncate"
+                                            title={file.name}
+                                          >
+                                            {file.name}
+                                          </p>
+                                          <p className="text-[10px] text-on-surface-variant">
+                                            {(file.size / (1024 * 1024)).toFixed(2)} MB
+                                          </p>
+                                        </div>
+                                      </div>
+                                      {!loading && (
+                                        <button
+                                          type="button"
+                                          onClick={() => removeBulkFile(idx)}
+                                          className="p-2 text-on-surface-variant hover:text-red-500 transition-colors opacity-0 group-hover:opacity-100"
+                                        >
+                                          <Trash2 size={16} />
+                                        </button>
+                                      )}
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                              <div className="bg-surface-container-highest px-4 py-2 flex justify-between items-center border-t border-outline-variant/20">
+                                <span className="text-[10px] font-bold text-on-surface-variant uppercase tracking-widest">
+                                  {bulkFiles.length} {t('add_book.files_selected')}
+                                </span>
+                                <span className="text-[10px] font-bold text-primary uppercase tracking-widest">
+                                  {(bulkFiles.reduce((acc, f) => acc + f.size, 0) / (1024 * 1024)).toFixed(
+                                    2
+                                  )}{' '}
+                                  MB Total
+                                </span>
+                              </div>
+                            </motion.div>
+                          )}
+                        </AnimatePresence>
+                      </>
+                    ) : (
+                      <div className="space-y-3">
+                        <div>
+                          <h4 className="text-lg font-bold text-on-surface">
+                            {t('add_book.bulk_review_title')}
+                          </h4>
+                          <p className="text-xs text-on-surface-variant mt-1">
+                            {t('add_book.bulk_review_hint')}
+                          </p>
+                        </div>
+                        <div className="max-h-[min(52vh,420px)] overflow-y-auto space-y-4 pr-1 scrollbar-thin scrollbar-thumb-primary/20">
+                          {bulkPreviewRows.map((row, idx) => (
+                            <div
+                              key={`${row.file.name}-${idx}`}
+                              className="rounded-2xl border border-outline-variant/20 bg-surface-container-lowest p-4 space-y-3"
+                            >
+                              <div className="flex items-start gap-3">
+                                {row.coverUrl ? (
+                                  <img
+                                    src={row.coverUrl}
+                                    alt=""
+                                    className="w-14 h-20 object-cover rounded-lg border border-outline-variant/20 shrink-0"
+                                  />
+                                ) : (
+                                  <div className="w-14 h-20 rounded-lg bg-primary/10 flex items-center justify-center shrink-0 text-primary">
+                                    <FileText size={20} />
+                                  </div>
+                                )}
+                                <p className="text-[10px] text-on-surface-variant break-all pt-1">
+                                  {row.file.name}
+                                </p>
+                              </div>
+                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                <div className="space-y-1">
+                                  <label className="text-[10px] font-bold text-on-surface-variant uppercase">
+                                    {t('add_book.label.title')}
+                                  </label>
+                                  <input
+                                    type="text"
+                                    value={row.title}
+                                    onChange={(e) =>
+                                      updateBulkPreviewRow(idx, { title: e.target.value })
+                                    }
+                                    className="w-full bg-surface-container-highest border-none rounded-xl py-2 px-3 text-xs focus:ring-2 focus:ring-primary"
+                                  />
+                                </div>
+                                <div className="space-y-1">
+                                  <label className="text-[10px] font-bold text-on-surface-variant uppercase">
+                                    {t('add_book.label.author')}
+                                  </label>
+                                  <input
+                                    type="text"
+                                    value={row.author}
+                                    onChange={(e) =>
+                                      updateBulkPreviewRow(idx, { author: e.target.value })
+                                    }
+                                    className="w-full bg-surface-container-highest border-none rounded-xl py-2 px-3 text-xs focus:ring-2 focus:ring-primary"
+                                  />
+                                </div>
+                                <div className="space-y-1">
+                                  <label className="text-[10px] font-bold text-on-surface-variant uppercase">
+                                    {t('add_book.label.publisher')}
+                                  </label>
+                                  <input
+                                    type="text"
+                                    value={row.publisher}
+                                    onChange={(e) =>
+                                      updateBulkPreviewRow(idx, { publisher: e.target.value })
+                                    }
+                                    className="w-full bg-surface-container-highest border-none rounded-xl py-2 px-3 text-xs focus:ring-2 focus:ring-primary"
+                                  />
+                                </div>
+                                <div className="space-y-1">
+                                  <label className="text-[10px] font-bold text-on-surface-variant uppercase">
+                                    {t('add_book.label.pages')}
+                                  </label>
+                                  <input
+                                    type="number"
+                                    min={1}
+                                    value={row.pages || ''}
+                                    onChange={(e) =>
+                                      updateBulkPreviewRow(idx, {
+                                        pages: parseInt(e.target.value, 10) || 0,
+                                      })
+                                    }
+                                    className="w-full bg-surface-container-highest border-none rounded-xl py-2 px-3 text-xs focus:ring-2 focus:ring-primary"
+                                  />
+                                </div>
+                                <div className="space-y-1 sm:col-span-2">
+                                  <label className="text-[10px] font-bold text-on-surface-variant uppercase">
+                                    {t('add_book.label.level_recommended')}
+                                  </label>
+                                  <div className="flex flex-col xs:flex-row gap-2 items-stretch xs:items-center">
+                                    <select
+                                      value={row.academicLevel}
+                                      onChange={(e) => {
+                                        const academicLevel = normalizeAcademicLevel(e.target.value);
+                                        updateBulkPreviewRow(idx, {
+                                          academicLevel,
+                                          educationalStage:
+                                            getEducationalStageFromLevel(academicLevel) ||
+                                            'Media Técnica',
+                                        });
+                                      }}
+                                      className="flex-1 w-full bg-surface-container-highest border-none rounded-xl py-2 px-3 text-xs focus:ring-2 focus:ring-primary"
+                                    >
+                                      <optgroup label={t('catalog.stage.primaria')}>
+                                        {PRIMARIA_LEVELS.map((lvl) => (
+                                          <option key={lvl} value={lvl}>
+                                            {lvl}
+                                          </option>
+                                        ))}
+                                      </optgroup>
+                                      <optgroup label={t('catalog.stage.media')}>
+                                        {MEDIA_TECNICA_LEVELS.map((lvl) => (
+                                          <option key={lvl} value={lvl}>
+                                            {lvl}
+                                          </option>
+                                        ))}
+                                      </optgroup>
+                                    </select>
+                                    <span className="text-[10px] font-bold px-2 py-1.5 rounded-lg bg-secondary/15 text-secondary shrink-0 text-center">
+                                      {row.educationalStage === 'Primaria'
+                                        ? t('catalog.stage.primaria')
+                                        : t('catalog.stage.media')}
+                                    </span>
+                                  </div>
+                                </div>
+                                <div className="space-y-1 sm:col-span-2">
+                                  <label className="text-[10px] font-bold text-on-surface-variant uppercase">
+                                    {t('add_book.label.materia')}
+                                  </label>
+                                  <select
+                                    value={row.category}
+                                    onChange={(e) =>
+                                      updateBulkPreviewRow(idx, {
+                                        category: normalizeCerpaCategory(e.target.value),
+                                      })
+                                    }
+                                    className="w-full bg-surface-container-highest border-none rounded-xl py-2 px-3 text-xs focus:ring-2 focus:ring-primary"
+                                  >
+                                    {CATEGORIES.map((c) => (
+                                      <option key={c} value={c}>
+                                        {t(MATERIA_LABEL_KEY[c])}
+                                      </option>
+                                    ))}
+                                  </select>
+                                </div>
+                                <div className="space-y-1 sm:col-span-2">
+                                  <label className="text-[10px] font-bold text-on-surface-variant uppercase">
+                                    {t('add_book.label.description')}
+                                  </label>
+                                  <textarea
+                                    value={row.description}
+                                    onChange={(e) =>
+                                      updateBulkPreviewRow(idx, { description: e.target.value })
+                                    }
+                                    rows={4}
+                                    className="w-full bg-surface-container-highest border-none rounded-xl py-2 px-3 text-xs focus:ring-2 focus:ring-primary resize-y min-h-[80px]"
+                                  />
+                                </div>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {loading && importProgress.total > 0 && (
                       <div className="space-y-3 bg-primary/5 p-4 rounded-2xl border border-primary/10">
                         <div className="flex items-center justify-between">
                           <div className="flex items-center gap-2 text-primary">
                             <Loader2 size={16} className="animate-spin" />
                             <span className="text-xs font-bold uppercase tracking-widest">
-                              {t('add_book.bulk_importing', { current: importProgress.current, total: importProgress.total })}
-                              {importProgress.phase === 'analyzing' && <span className="ml-2 text-primary/60">({t('add_book.cloud.analyzing')})</span>}
+                              {importProgress.phase === 'analyzing'
+                                ? t('add_book.bulk_analyzing', {
+                                    current: importProgress.current,
+                                    total: importProgress.total,
+                                  })
+                                : t('add_book.bulk_importing', {
+                                    current: importProgress.current,
+                                    total: importProgress.total,
+                                  })}
                             </span>
                           </div>
                           <span className="text-xs font-bold text-primary">
@@ -942,10 +1441,12 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({ isOpen, onClose }) =
                           </span>
                         </div>
                         <div className="w-full h-2 bg-primary/10 rounded-full overflow-hidden">
-                          <motion.div 
-                            className="h-full bg-primary" 
+                          <motion.div
+                            className="h-full bg-primary"
                             initial={{ width: 0 }}
-                            animate={{ width: `${(importProgress.current / importProgress.total) * 100}%` }}
+                            animate={{
+                              width: `${(importProgress.current / importProgress.total) * 100}%`,
+                            }}
                             transition={{ duration: 0.3 }}
                           />
                         </div>
@@ -968,7 +1469,7 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({ isOpen, onClose }) =
                       </div>
                     )}
                   </div>
-                  <div className="flex gap-4 pt-4">
+                  <div className="flex flex-col sm:flex-row gap-3 pt-4">
                     <button
                       type="button"
                       onClick={() => setIsUnlocked(false)}
@@ -977,13 +1478,37 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({ isOpen, onClose }) =
                     >
                       {t('add_book.action.back')}
                     </button>
+                    {bulkCatalogStep === 'review' && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setBulkCatalogStep('pick');
+                          setBulkPreviewRows([]);
+                        }}
+                        className="flex-1 py-4 text-sm font-bold text-on-surface hover:bg-surface-container-high rounded-xl transition-all border border-outline-variant/30"
+                        disabled={loading}
+                      >
+                        {t('add_book.action.back_to_files')}
+                      </button>
+                    )}
                     <button
                       type="submit"
-                      disabled={loading || bulkFiles.length === 0}
+                      disabled={
+                        loading ||
+                        (bulkCatalogStep === 'pick' ? bulkFiles.length === 0 : bulkPreviewRows.length === 0)
+                      }
                       className="flex-[2] py-4 bg-primary text-white font-bold rounded-xl hover:bg-primary-container transition-all shadow-md flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
                     >
-                      {loading ? <Loader2 size={20} className="animate-spin" /> : <Upload size={20} />}
-                      {t('add_book.action.import')}
+                      {loading ? (
+                        <Loader2 size={20} className="animate-spin" />
+                      ) : bulkCatalogStep === 'pick' ? (
+                        <Table size={20} />
+                      ) : (
+                        <Upload size={20} />
+                      )}
+                      {bulkCatalogStep === 'pick'
+                        ? t('add_book.action.analyze_pdfs')
+                        : t('add_book.action.confirm_catalog_save')}
                     </button>
                   </div>
                 </form>
