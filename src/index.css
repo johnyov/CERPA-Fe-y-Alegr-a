@@ -1,0 +1,81 @@
+@import url('https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,400;6..72,700;6..72,800&family=Public+Sans:wght@300;400;500;600;700&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-headline: "Newsreader", serif;
+  --font-body: "Public Sans", sans-serif;
+  --font-label: "Public Sans", sans-serif;
+
+  --color-primary: #570013;
+  --color-primary-container: #800020;
+  --color-secondary: #9c4049;
+  --color-background: #fcf9f0;
+  --color-surface: #fcf9f0;
+  --color-surface-container: #f1eee5;
+  --color-surface-container-low: #f6f3ea;
+  --color-surface-container-high: #ebe8df;
+  --color-surface-container-highest: #e5e2da;
+  --color-surface-container-lowest: #ffffff;
+  --color-on-surface: #1c1c17;
+  --color-on-surface-variant: #584141;
+  --color-outline-variant: #e0bfbf;
+  --color-primary-fixed: #ffdada;
+  --color-secondary-fixed: #ffdada;
+  --color-tertiary-fixed: #ffdcbd;
+  --color-on-tertiary-fixed: #2c1600;
+  --color-on-secondary-fixed-variant: #7e2933;
+}
+
+/* Explicitly define dark mode variables using standard CSS to ensure override */
+:root.dark {
+  --color-primary: #ffb4ab;
+  --color-primary-container: #93000a;
+  --color-secondary: #e7bdbd;
+  --color-background: #0e0e0a;
+  --color-surface: #0e0e0a;
+  --color-surface-container: #1c1c17;
+  --color-surface-container-low: #14140f;
+  --color-surface-container-high: #25251f;
+  --color-surface-container-highest: #303029;
+  --color-surface-container-lowest: #050503;
+  --color-on-surface: #e5e2da;
+  --color-on-surface-variant: #d8c2c2;
+  --color-outline-variant: #534343;
+  --color-primary-fixed: #4a000d;
+  --color-secondary-fixed: #3d1c20;
+}
+
+/* Ensure Tailwind 4 recognizes the dark variant correctly */
+@variant dark (&:where(.dark, .dark *));
+
+@layer base {
+  body {
+    @apply bg-background text-on-surface font-body transition-colors duration-300;
+  }
+  h1, h2, h3, h4 {
+    @apply font-headline;
+  }
+}
+
+.scanner-frame {
+  background: linear-gradient(to right, #570013 4px, transparent 4px) 0 0,
+              linear-gradient(to right, #570013 4px, transparent 4px) 0 100%,
+              linear-gradient(to left, #570013 4px, transparent 4px) 100% 0,
+              linear-gradient(to left, #570013 4px, transparent 4px) 100% 100%,
+              linear-gradient(to bottom, #570013 4px, transparent 4px) 0 0,
+              linear-gradient(to bottom, #570013 4px, transparent 4px) 100% 0,
+              linear-gradient(to top, #570013 4px, transparent 4px) 0 100%,
+              linear-gradient(to top, #570013 4px, transparent 4px) 100% 100%;
+  background-repeat: no-repeat;
+  background-size: 40px 40px;
+}
+
+@keyframes scan {
+  0% { transform: translateY(0); }
+  50% { transform: translateY(100%); }
+  100% { transform: translateY(0); }
+}
+
+.animate-scan {
+  animation: scan 3s ease-in-out infinite;
+}

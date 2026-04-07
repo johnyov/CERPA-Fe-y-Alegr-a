@@ -1,0 +1,67 @@
+{
+  "entities": {
+    "Book": {
+      "title": "Book",
+      "description": "A book in the library catalog",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string", "description": "The title of the book" },
+        "author": { "type": "string", "description": "The author of the book" },
+        "isbn": { "type": "string", "description": "The ISBN-13 of the book" },
+        "description": { "type": "string", "description": "A brief summary of the book" },
+        "coverUrl": { "type": "string", "description": "URL to the book cover image" },
+        "category": { "type": "string", "description": "The category of the book (e.g., Sociales, Ciencias)" },
+        "year": { "type": "integer", "description": "The publication year" },
+        "pages": { "type": "integer", "description": "Number of pages" },
+        "language": { "type": "string", "description": "The language of the book" },
+        "stock": { "type": "integer", "description": "Number of units available" },
+        "academicLevel": { "type": "string", "description": "The academic level (e.g., 3er Año)" }
+      },
+      "required": ["title", "author", "isbn"]
+    },
+    "User": {
+      "title": "User",
+      "description": "A user of the system",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "Firebase Auth UID" },
+        "email": { "type": "string", "description": "User email" },
+        "displayName": { "type": "string", "description": "User display name" },
+        "photoUrl": { "type": "string", "description": "User photo URL" },
+        "grade": { "type": "string", "description": "User academic grade" },
+        "year": { "type": "string", "description": "User academic year" },
+        "role": { "type": "string", "enum": ["admin", "user", "teacher", "student", "other"], "description": "User role" }
+      },
+      "required": ["uid", "email"]
+    },
+    "Scan": {
+      "title": "Scan",
+      "description": "A record of a book scan or online reading",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "UID of the user who scanned" },
+        "bookId": { "type": "string", "description": "ID of the scanned book" },
+        "timestamp": { "type": "string", "format": "date-time", "description": "When the scan occurred" },
+        "type": { "type": "string", "enum": ["scan", "read"], "description": "The type of interaction" }
+      },
+      "required": ["uid", "bookId", "timestamp"]
+    },
+    "Favorite": {
+      "title": "Favorite",
+      "description": "A record of a favorited book",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "UID of the user who favorited" },
+        "bookId": { "type": "string", "description": "ID of the favorited book" },
+        "timestamp": { "type": "string", "format": "date-time", "description": "When the favorite was added" }
+      },
+      "required": ["uid", "bookId", "timestamp"]
+    }
+  },
+  "firestore": {
+    "/books": { "schema": "Book", "description": "Collection of books" },
+    "/users": { "schema": "User", "description": "Collection of users" },
+    "/scans": { "schema": "Scan", "description": "Collection of scan records" },
+    "/favorites": { "schema": "Favorite", "description": "Collection of favorite records" }
+  }
+}
