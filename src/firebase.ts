@@ -1,4 +1,4 @@
-import { initializeApp } from 'firebase/app';
+import { initializeApp, type FirebaseOptions } from 'firebase/app';
 import { 
   getAuth, 
   GoogleAuthProvider, 
@@ -10,7 +10,15 @@ import {
 } from 'firebase/auth';
 import { getFirestore, doc, getDoc, setDoc, collection, query, where, getDocs, onSnapshot, addDoc, serverTimestamp, deleteDoc } from 'firebase/firestore';
 import { getStorage } from 'firebase/storage';
-import firebaseConfig from '../firebase-applet-config.json';
+import appletConfig from '../firebase-applet-config.json';
+
+/** Web API key de la app Firebase (debe coincidir con la consola del proyecto). */
+const FIREBASE_WEB_API_KEY = 'AIzaSyCj4ijgCKXddXKoCFVM6pzk77EFCL0W0Ks';
+
+const firebaseConfig: FirebaseOptions = {
+  ...(appletConfig as FirebaseOptions),
+  apiKey: FIREBASE_WEB_API_KEY,
+};
 
 const app = initializeApp(firebaseConfig);
 export const db = getFirestore(app);
