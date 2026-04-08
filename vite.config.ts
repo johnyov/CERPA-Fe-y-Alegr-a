@@ -4,7 +4,7 @@ import path from 'path';
 import { defineConfig } from 'vite';
 
 export default defineConfig({
-  base: '/CERPA-Fe-y-Alegr-a/',
+  base: './',
   plugins: [react(), tailwindcss()],
   resolve: {
     alias: {
