@@ -12,14 +12,14 @@ import { getFirestore, doc, getDoc, setDoc, collection, query, where, getDocs, o
 import { getStorage } from 'firebase/storage';
 import appletConfig from '../firebase-applet-config.json';
 
-/** Web API key de la app Firebase (debe coincidir con la consola del proyecto). */
-const FIREBASE_WEB_API_KEY = 'AIzaSyCj4ijgCKXddXKoCFVM6pzk77EFCL0W0Ks';
-
-const firebaseConfig: FirebaseOptions = {
-  ...(appletConfig as FirebaseOptions),
-  apiKey: FIREBASE_WEB_API_KEY,
+const firebaseConfig = {
+  apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
+  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
+  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
+  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
+  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
+  appId: import.meta.env.VITE_FIREBASE_APP_ID
 };
-
 const app = initializeApp(firebaseConfig);
 export const db = getFirestore(app);
 export const auth = getAuth(app);
